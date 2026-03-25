@@ -15,44 +15,67 @@ const App = () => {
   const [notepadContent, setNotepadContent] = useState('')
   const [taskGroups, setTaskGroups] = useState([])
 
+  // Helper: decode compressed payload and hydrate state
+  const applySharedPayload = (payload) => {
+    try {
+      let decoded
+      const decompressed = LZString.decompressFromEncodedURIComponent(payload)
+      if (decompressed) {
+        decoded = JSON.parse(decompressed)
+      } else {
+        decoded = JSON.parse(decodeURIComponent(escape(atob(payload))))
+      }
+
+      const name = decoded.n || decoded.name
+      const groups = (decoded.g || decoded.groups || []).map(group => ({
+        id: Date.now() + Math.random(),
+        theme: group.t || group.theme,
+        items: (group.i || group.items || []).map(item => ({
+          id: Date.now() + Math.random(),
+          text: item.x || item.text,
+          responsible: item.r || item.responsible,
+          completed: item.c !== undefined ? !!item.c : (!!item.completed)
+        }))
+      }))
+
+      setClientData({ name })
+      setTaskGroups(groups)
+      setIsSharedView(true)
+      setView('wizard')
+      setStep(4)
+    } catch (e) {
+      console.error('Erro ao decodificar payload compartilhado', e)
+    }
+  }
+
   // Load projects from localStorage
   useEffect(() => {
-    // Check for shared link
     const params = new URLSearchParams(window.location.search)
-    const shareData = params.get('share')
-    
-    if (shareData) {
-      try {
-        // Try LZ-String compressed format first (new), fall back to plain base64 (legacy)
-        let decoded
-        const decompressed = LZString.decompressFromEncodedURIComponent(shareData)
-        if (decompressed) {
-          decoded = JSON.parse(decompressed)
-        } else {
-          decoded = JSON.parse(decodeURIComponent(escape(atob(shareData))))
-        }
-        
-        const name = decoded.n || decoded.name
-        const groups = (decoded.g || decoded.groups || []).map(group => ({
-          id: Date.now() + Math.random(),
-          theme: group.t || group.theme,
-          items: (group.i || group.items || []).map(item => ({
-            id: Date.now() + Math.random(),
-            text: item.x || item.text,
-            responsible: item.r || item.responsible,
-            completed: item.c !== undefined ? !!item.c : (!!item.completed)
-          }))
-        }))
+    const shortId = params.get('s')      // new: self-hosted short link
+    const shareData = params.get('share') // legacy: inline compressed
 
-        setClientData({ name })
-        setTaskGroups(groups)
-        setIsSharedView(true)
-        setView('wizard')
-        setStep(4)
-        return
-      } catch (e) {
-        console.error("Erro ao decodificar link compartilhado", e)
-      }
+    if (shortId) {
+      // Fetch payload from our own API
+      ;(async () => {
+        try {
+          const res = await fetch(`/api/load/${shortId}`)
+          if (res.ok) {
+            const { payload } = await res.json()
+            applySharedPayload(payload)
+          } else {
+            alert('Link expirado ou inválido.')
+          }
+        } catch (e) {
+          console.error('Erro ao carregar link curto', e)
+          alert('Erro ao carregar o checklist. Tente novamente.')
+        }
+      })()
+      return
+    }
+
+    if (shareData) {
+      applySharedPayload(shareData)
+      return
     }
 
     const savedProjects = localStorage.getItem('checklist-fa-projects')
@@ -205,58 +228,31 @@ const App = () => {
           }))
         }))
       }
-      const compressed = LZString.compressToEncodedURIComponent(JSON.stringify(compactData))
-      const longUrl = `${window.location.origin}${window.location.pathname}?share=${compressed}`
+      const payload = LZString.compressToEncodedURIComponent(JSON.stringify(compactData))
 
-      // Step 2: Try multiple shorteners with fallback
+      // Step 2: Send to our own self-hosted shortener API
       let shortUrl = null
-
-      // Try TinyURL first (good CORS support)
       try {
-        const res = await fetch(
-          `https://tinyurl.com/api-create.php?url=${encodeURIComponent(longUrl)}`,
-          { signal: AbortSignal.timeout(5000) }
-        )
+        const res = await fetch('/api/shorten', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ payload }),
+          signal: AbortSignal.timeout(8000)
+        })
         if (res.ok) {
-          const text = await res.text()
-          if (text && text.startsWith('http')) shortUrl = text.trim()
+          const { id } = await res.json()
+          shortUrl = `${window.location.origin}${window.location.pathname}?s=${id}`
         }
-      } catch (_) { /* ignore, try next */ }
+      } catch (_) { /* API indisponível, usar fallback inline */ }
 
-      // Fallback: is.gd
-      if (!shortUrl) {
-        try {
-          const res = await fetch(
-            `https://is.gd/create.php?format=json&url=${encodeURIComponent(longUrl)}`,
-            { signal: AbortSignal.timeout(5000) }
-          )
-          const json = await res.json()
-          if (json.shorturl) shortUrl = json.shorturl
-        } catch (_) { /* ignore */ }
-      }
-
-      // Fallback: clckru
-      if (!shortUrl) {
-        try {
-          const res = await fetch(
-            `https://clck.ru/--?url=${encodeURIComponent(longUrl)}`,
-            { signal: AbortSignal.timeout(5000) }
-          )
-          if (res.ok) {
-            const text = await res.text()
-            if (text && text.startsWith('http')) shortUrl = text.trim()
-          }
-        } catch (_) { /* ignore */ }
-      }
-
-      const finalUrl = shortUrl || longUrl
-      const wasShortened = !!shortUrl
+      // Fallback: URL com dados inline (sem terceiros, sem anúncios)
+      const finalUrl = shortUrl || `${window.location.origin}${window.location.pathname}?share=${payload}`
 
       await navigator.clipboard.writeText(finalUrl)
-      if (wasShortened) {
+      if (shortUrl) {
         alert(`🔗 Link curto copiado:\n${finalUrl}`)
       } else {
-        alert(`⚠️ Não foi possível encurtar o link automaticamente.\nO link completo foi copiado.\n\n${finalUrl}`)
+        alert(`📋 Link copiado (versão completa):\n${finalUrl}`)
       }
     } catch (err) {
       console.error('Erro ao gerar link:', err)
