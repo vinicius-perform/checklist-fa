@@ -8,6 +8,7 @@ const App = () => {
   const [projects, setProjects] = useState([])
   const [activeProjectId, setActiveProjectId] = useState(null)
   const [isSharedView, setIsSharedView] = useState(false)
+  const [sharingLoading, setSharingLoading] = useState(false)
   
   // Current project being edited/created
   const [clientData, setClientData] = useState({ name: '' })
@@ -189,28 +190,80 @@ const App = () => {
     return total === 0 ? 0 : Math.round((completed / total) * 100)
   }
 
-  const generateShareLink = () => {
-    // Compact keys + LZ-String URL-safe compression = minimal URL
-    const compactData = {
-      n: clientData.name,
-      g: taskGroups.map(g => ({
-        t: g.theme,
-        i: g.items.map(t => ({
-          x: t.text,
-          r: t.responsible,
-          c: t.completed ? 1 : 0
+  const generateShareLink = async () => {
+    setSharingLoading(true)
+    try {
+      // Step 1: Compact keys + LZ-String compression
+      const compactData = {
+        n: clientData.name,
+        g: taskGroups.map(g => ({
+          t: g.theme,
+          i: g.items.map(t => ({
+            x: t.text,
+            r: t.responsible,
+            c: t.completed ? 1 : 0
+          }))
         }))
-      }))
+      }
+      const compressed = LZString.compressToEncodedURIComponent(JSON.stringify(compactData))
+      const longUrl = `${window.location.origin}${window.location.pathname}?share=${compressed}`
+
+      // Step 2: Try multiple shorteners with fallback
+      let shortUrl = null
+
+      // Try TinyURL first (good CORS support)
+      try {
+        const res = await fetch(
+          `https://tinyurl.com/api-create.php?url=${encodeURIComponent(longUrl)}`,
+          { signal: AbortSignal.timeout(5000) }
+        )
+        if (res.ok) {
+          const text = await res.text()
+          if (text && text.startsWith('http')) shortUrl = text.trim()
+        }
+      } catch (_) { /* ignore, try next */ }
+
+      // Fallback: is.gd
+      if (!shortUrl) {
+        try {
+          const res = await fetch(
+            `https://is.gd/create.php?format=json&url=${encodeURIComponent(longUrl)}`,
+            { signal: AbortSignal.timeout(5000) }
+          )
+          const json = await res.json()
+          if (json.shorturl) shortUrl = json.shorturl
+        } catch (_) { /* ignore */ }
+      }
+
+      // Fallback: clckru
+      if (!shortUrl) {
+        try {
+          const res = await fetch(
+            `https://clck.ru/--?url=${encodeURIComponent(longUrl)}`,
+            { signal: AbortSignal.timeout(5000) }
+          )
+          if (res.ok) {
+            const text = await res.text()
+            if (text && text.startsWith('http')) shortUrl = text.trim()
+          }
+        } catch (_) { /* ignore */ }
+      }
+
+      const finalUrl = shortUrl || longUrl
+      const wasShortened = !!shortUrl
+
+      await navigator.clipboard.writeText(finalUrl)
+      if (wasShortened) {
+        alert(`🔗 Link curto copiado:\n${finalUrl}`)
+      } else {
+        alert(`⚠️ Não foi possível encurtar o link automaticamente.\nO link completo foi copiado.\n\n${finalUrl}`)
+      }
+    } catch (err) {
+      console.error('Erro ao gerar link:', err)
+      alert('Erro ao gerar o link. Tente novamente.')
+    } finally {
+      setSharingLoading(false)
     }
-    const compressed = LZString.compressToEncodedURIComponent(JSON.stringify(compactData))
-    const url = `${window.location.origin}${window.location.pathname}?share=${compressed}`
-    
-    navigator.clipboard.writeText(url).then(() => {
-      alert('Link público copiado!')
-    }).catch(err => {
-      console.error('Erro ao copiar link: ', err)
-      alert('Não foi possível copiar o link. Tente manualmente: ' + url)
-    })
   }
 
   const renderStepper = () => (
