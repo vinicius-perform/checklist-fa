@@ -22,8 +22,22 @@ const App = () => {
     if (shareData) {
       try {
         const decoded = JSON.parse(decodeURIComponent(escape(atob(shareData))))
-        setClientData({ name: decoded.name })
-        setTaskGroups(decoded.groups)
+        
+        // Handle shortened format (n=name, g=groups) or legacy format
+        const name = decoded.n || decoded.name
+        const groups = (decoded.g || decoded.groups || []).map(group => ({
+          id: group.id || Date.now() + Math.random(),
+          theme: group.t || group.theme,
+          items: (group.i || group.items || []).map(item => ({
+            id: item.id || Date.now() + Math.random(),
+            text: item.x || item.text,
+            responsible: item.r || item.responsible,
+            completed: item.c !== undefined ? !!item.c : (!!item.completed)
+          }))
+        }))
+
+        setClientData({ name })
+        setTaskGroups(groups)
         setIsSharedView(true)
         setView('wizard')
         setStep(4)
@@ -169,16 +183,24 @@ const App = () => {
   }
 
   const generateShareLink = () => {
-    const data = {
-      name: clientData.name,
-      groups: taskGroups
+    // Shortened data structure to keep URL length minimal
+    const compactData = {
+      n: clientData.name,
+      g: taskGroups.map(g => ({
+        t: g.theme,
+        i: g.items.map(t => ({
+          x: t.text,
+          r: t.responsible,
+          c: t.completed ? 1 : 0
+        }))
+      }))
     }
-    const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(data))))
+    const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(compactData))))
     const url = `${window.location.origin}${window.location.pathname}?share=${encoded}`
     
     // Copy to clipboard
     navigator.clipboard.writeText(url).then(() => {
-      alert('Link público copiado para a área de transferência!')
+      alert('Link público otimizado e copiado!')
     }).catch(err => {
       console.error('Erro ao copiar link: ', err)
       alert('Não foi possível copiar o link. Tente manualmente: ' + url)
