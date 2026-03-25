@@ -118,6 +118,30 @@
   transform: rotate(45deg);
 }
 
+.task-name {
+  font-weight: 600;
+  color: var(--text);
+  font-size: 1.05rem;
+}
+
+.task-responsible {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.resp-label {
+  color: var(--primary);
+  opacity: 0.8;
+  font-weight: 500;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
 .delete-btn {
   background: transparent;
   color: var(--text-dim);
@@ -128,6 +152,24 @@
 .delete-btn:hover {
   color: var(--accent);
   background: rgba(255, 0, 124, 0.1);
+}
+
+.btn-share {
+  background: rgba(0, 242, 254, 0.1);
+  color: var(--primary);
+  padding: 0.75rem 1.5rem;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 242, 254, 0.3);
+  display: flex;
+  align-items: center;
+  font-weight: 600;
+  transition: 0.3s;
+}
+
+.btn-share:hover {
+  background: rgba(0, 242, 254, 0.2);
+  border-color: var(--primary);
+  transform: translateY(-2px);
 }
 
 /* Stepper */

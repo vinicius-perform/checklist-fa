@@ -6,6 +6,7 @@ const App = () => {
   const [step, setStep] = useState(1)
   const [projects, setProjects] = useState([])
   const [activeProjectId, setActiveProjectId] = useState(null)
+  const [isSharedView, setIsSharedView] = useState(false)
   
   // Current project being edited/created
   const [clientData, setClientData] = useState({ name: '' })
@@ -14,6 +15,24 @@ const App = () => {
 
   // Load projects from localStorage
   useEffect(() => {
+    // Check for shared link
+    const params = new URLSearchParams(window.location.search)
+    const shareData = params.get('share')
+    
+    if (shareData) {
+      try {
+        const decoded = JSON.parse(decodeURIComponent(escape(atob(shareData))))
+        setClientData({ name: decoded.name })
+        setTaskGroups(decoded.groups)
+        setIsSharedView(true)
+        setView('wizard')
+        setStep(4)
+        return
+      } catch (e) {
+        console.error("Erro ao decodificar link compartilhado", e)
+      }
+    }
+
     const savedProjects = localStorage.getItem('checklist-fa-projects')
     if (savedProjects) {
       setProjects(JSON.parse(savedProjects))
@@ -53,6 +72,8 @@ const App = () => {
   }
 
   const saveCurrentProject = () => {
+    if (isSharedView) return // Don't save shared projects to local list
+
     const updatedProject = {
       id: activeProjectId,
       name: clientData.name,
@@ -145,6 +166,23 @@ const App = () => {
       completed += g.items.filter(i => i.completed).length
     })
     return total === 0 ? 0 : Math.round((completed / total) * 100)
+  }
+
+  const generateShareLink = () => {
+    const data = {
+      name: clientData.name,
+      groups: taskGroups
+    }
+    const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(data))))
+    const url = `${window.location.origin}${window.location.pathname}?share=${encoded}`
+    
+    // Copy to clipboard
+    navigator.clipboard.writeText(url).then(() => {
+      alert('Link público copiado para a área de transferência!')
+    }).catch(err => {
+      console.error('Erro ao copiar link: ', err)
+      alert('Não foi possível copiar o link. Tente manualmente: ' + url)
+    })
   }
 
   const renderStepper = () => (
@@ -297,8 +335,33 @@ const App = () => {
               {step === 4 && (
                 <div className="fade-in">
                   <div className="checklist-header">
-                    <h2>Checklist: {clientData.name}</h2>
-                    <button className="btn-secondary" onClick={() => setView('home')}>Salvar e Sair</button>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <div>
+                        <h2>Checklist: {clientData.name}</h2>
+                        <span className="client-tag">Visualização de Alta Performance</span>
+                      </div>
+                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        {!isSharedView && (
+                          <button className="btn-share" onClick={generateShareLink}>
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: '8px' }}>
+                              <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"></path>
+                              <polyline points="16 6 12 2 8 6"></polyline>
+                              <line x1="12" y1="2" x2="12" y2="15"></line>
+                            </svg>
+                            Link Público
+                          </button>
+                        )}
+                        <button className="btn-secondary" onClick={() => {
+                          if (isSharedView) {
+                            window.location.href = window.location.origin + window.location.pathname
+                          } else {
+                            setView('home')
+                          }
+                        }}>
+                          {isSharedView ? 'Criar Meu Checklist' : 'Salvar e Sair'}
+                        </button>
+                      </div>
+                    </div>
                   </div>
                   <div className="task-list">
                     {taskGroups.map(group => (
@@ -315,8 +378,12 @@ const App = () => {
                                   {task.completed && <div className="checked-icon" />}
                                 </div>
                                 <div style={{ display: 'flex', flexDirection: 'column' }}>
-                                  <span>{task.text}</span>
-                                  {task.responsible && <span className="task-responsible">{task.responsible}</span>}
+                                  <span className="task-name">{task.text}</span>
+                                  {task.responsible && (
+                                    <span className="task-responsible">
+                                      <span className="resp-label">Responsável:</span> {task.responsible}
+                                    </span>
+                                  )}
                                 </div>
                               </div>
                             </div>
@@ -326,8 +393,16 @@ const App = () => {
                     ))}
                   </div>
                   <div className="actions">
-                    <button className="btn-secondary" onClick={prevStep}>Revisar Responsáveis</button>
-                    <button className="btn-primary" onClick={() => setView('home')}>Finalizar Sessão</button>
+                    {!isSharedView && <button className="btn-secondary" onClick={prevStep}>Revisar Responsáveis</button>}
+                    <button className="btn-primary" onClick={() => {
+                      if (isSharedView) {
+                        alert('Checklist visualizado com sucesso!')
+                      } else {
+                        setView('home')
+                      }
+                    }}>
+                      {isSharedView ? 'Checklist Online' : 'Finalizar Sessão'}
+                    </button>
                   </div>
                 </div>
               )}
