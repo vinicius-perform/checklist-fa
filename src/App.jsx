@@ -8,8 +8,11 @@ const App = () => {
   const [projects, setProjects] = useState([])
   const [activeProjectId, setActiveProjectId] = useState(null)
   const [isSharedView, setIsSharedView] = useState(false)
-  const [sharingLoading, setSharingLoading] = useState(false)
-  const [shortId, setShortId] = useState(null)   // ID do link curto ativo
+  const [isSyncing, setIsSyncing] = useState(false) // status do debounce de auto-save
+  const [isEditingName, setIsEditingName] = useState(false)
+  const [user, setUser] = useState(null)         // usuário logado
+  const [loginForm, setLoginForm] = useState({ username: '', password: '' })
+  const [loginError, setLoginError] = useState('')
   const autoSaveTimerRef = useRef(null)           // timer do debounce
   
   // Current project being edited/created
@@ -64,6 +67,7 @@ const App = () => {
           if (res.ok) {
             const { payload } = await res.json()
             applySharedPayload(payload)
+            setShortId(shortId) // persiste o ID para poder salvar depois
           } else {
             alert('Link expirado ou inválido.')
           }
@@ -84,7 +88,43 @@ const App = () => {
     if (savedProjects) {
       setProjects(JSON.parse(savedProjects))
     }
+
+    // Auth check
+    const savedUser = localStorage.getItem('checklist-fa-user')
+    if (savedUser) {
+      setUser(JSON.parse(savedUser))
+    }
   }, [])
+
+  const handleLogin = async (e) => {
+    e.preventDefault()
+    setLoginError('')
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(loginForm)
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setUser(data.user)
+        localStorage.setItem('checklist-fa-user', JSON.stringify(data.user))
+        localStorage.setItem('checklist-fa-token', data.token)
+        setView('home')
+      } else {
+        setLoginError('Credenciais inválidas.')
+      }
+    } catch (e) {
+      setLoginError('Erro ao conectar com o servidor.')
+    }
+  }
+
+  const handleLogout = () => {
+    setUser(null)
+    localStorage.removeItem('checklist-fa-user')
+    localStorage.removeItem('checklist-fa-token')
+    setView('home')
+  }
 
   // Save projects to localStorage whenever they change
   useEffect(() => {
@@ -94,6 +134,10 @@ const App = () => {
   }, [projects])
 
   const startNewProject = () => {
+    if (!user) {
+      setView('login')
+      return
+    }
     setActiveProjectId(Date.now())
     setClientData({ name: '' })
     setNotepadContent('')
@@ -117,6 +161,18 @@ const App = () => {
       setProjects(projects.filter(p => p.id !== id))
     }
   }
+
+  // Prevent accidental exit while saving
+  useEffect(() => {
+    const handleBeforeUnload = (e) => {
+      if (isSyncing || saveStatus === 'saving') {
+        e.preventDefault()
+        e.returnValue = ''
+      }
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [isSyncing, saveStatus])
 
   const saveCurrentProject = () => {
     if (isSharedView) return // Don't save shared projects to local list
@@ -149,6 +205,7 @@ const App = () => {
   useEffect(() => {
     if (!shortId || isSharedView || taskGroups.length === 0) return
 
+    setIsSyncing(true)
     clearTimeout(autoSaveTimerRef.current)
     autoSaveTimerRef.current = setTimeout(async () => {
       try {
@@ -170,10 +227,11 @@ const App = () => {
           body: JSON.stringify({ payload, id: shortId })
         })
       } catch (_) { /* silent fail — link ainda funciona com estado anterior */ }
+      setIsSyncing(false)
     }, 1500)
 
     return () => clearTimeout(autoSaveTimerRef.current)
-  }, [taskGroups, shortId])
+  }, [taskGroups, clientData.name, shortId])
 
   const nextStep = () => setStep(prev => Math.min(prev + 1, 4))
   const prevStep = () => setStep(prev => Math.max(prev - 1, 1))
@@ -223,6 +281,10 @@ const App = () => {
   }
 
   const toggleTask = (groupId, taskId) => {
+    if (!user) {
+      alert('Acesso Restrito: Apenas usuários logados podem marcar tarefas.')
+      return
+    }
     setTaskGroups(taskGroups.map(group => {
       if (group.id === groupId) {
         return {
@@ -248,7 +310,6 @@ const App = () => {
   const generateShareLink = async () => {
     setSharingLoading(true)
     try {
-      // Step 1: Compact keys + LZ-String compression
       const compactData = {
         n: clientData.name,
         g: taskGroups.map(g => ({
@@ -262,7 +323,6 @@ const App = () => {
       }
       const payload = LZString.compressToEncodedURIComponent(JSON.stringify(compactData))
 
-      // Step 2: Send to our own self-hosted shortener API
       let shortUrl = null
       try {
         const res = await fetch('/api/shorten', {
@@ -274,18 +334,15 @@ const App = () => {
         if (res.ok) {
           const { id } = await res.json()
           shortUrl = `${window.location.origin}${window.location.pathname}?s=${id}`
-          // Persiste o ID para auto-save futuro e atualiza a URL do browser
           setShortId(id)
           window.history.replaceState(null, '', `?s=${id}`)
         }
-      } catch (_) { /* API indisponível, usar fallback inline */ }
+      } catch (_) { /* fallback inline */ }
 
-      // Fallback: URL com dados inline (sem terceiros, sem anúncios)
       const finalUrl = shortUrl || `${window.location.origin}${window.location.pathname}?share=${payload}`
-
       await navigator.clipboard.writeText(finalUrl)
       if (shortUrl) {
-        alert(`🔗 Link curto copiado:\n${finalUrl}\n\nA partir de agora, o link é atualizado automaticamente a cada check.`)
+        alert(`🔗 Link curto copiado:\n${finalUrl}\n\nClique em Salvar após dar checks para atualizar o link.`)
       } else {
         alert(`📋 Link copiado (versão completa):\n${finalUrl}`)
       }
@@ -297,21 +354,67 @@ const App = () => {
     }
   }
 
-  const renderStepper = () => (
-    <div className="stepper">
-      {[1, 2, 3, 4].map(num => (
-        <div key={num} className={`step-item ${step === num ? 'active' : ''} ${step > num ? 'completed' : ''}`}>
-          <div className="step-dot">{step > num ? '✓' : num}</div>
-          <span className="step-label">
-            {num === 1 && 'Cliente'}
-            {num === 2 && 'Atividades'}
-            {num === 3 && 'Responsáveis'}
-            {num === 4 && 'Checklist'}
-          </span>
-        </div>
-      ))}
-    </div>
-  )
+  // Salvar checks no Redis sem mudar o link
+  const [saveStatus, setSaveStatus] = useState('idle') // 'idle' | 'saving' | 'saved' | 'error'
+
+  const saveToRedis = async () => {
+    if (!shortId) return
+    setSaveStatus('saving')
+    try {
+      const compactData = {
+        n: clientData.name,
+        g: taskGroups.map(g => ({
+          t: g.theme,
+          i: g.items.map(t => ({
+            x: t.text,
+            r: t.responsible,
+            c: t.completed ? 1 : 0
+          }))
+        }))
+      }
+      const payload = LZString.compressToEncodedURIComponent(JSON.stringify(compactData))
+      const res = await fetch('/api/shorten', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payload, id: shortId })
+      })
+      setSaveStatus(res.ok ? 'saved' : 'error')
+    } catch (_) {
+      setSaveStatus('error')
+    } finally {
+      setTimeout(() => setSaveStatus('idle'), 2500)
+    }
+  }
+
+  const renderStepper = () => {
+    const isStepDisabled = (num) => {
+      if (num === 1) return false
+      if (num === 2) return !clientData.name.trim()
+      if (num === 3) return !notepadContent.trim()
+      if (num === 4) return taskGroups.length === 0
+      return true
+    }
+
+    return (
+      <div className="stepper">
+        {[1, 2, 3, 4].map(num => (
+          <div 
+            key={num} 
+            className={`step-item ${step === num ? 'active' : ''} ${step > num ? 'completed' : ''} ${isStepDisabled(num) ? 'disabled' : 'clickable'}`}
+            onClick={() => !isStepDisabled(num) && setStep(num)}
+          >
+            <div className="step-dot">{step > num ? '✓' : num}</div>
+            <span className="step-label">
+              {num === 1 && 'Cliente'}
+              {num === 2 && 'Atividades'}
+              {num === 3 && 'Responsáveis'}
+              {num === 4 && 'Checklist'}
+            </span>
+          </div>
+        ))}
+      </div>
+    )
+  }
 
   return (
     <div className="container fade-in">
@@ -319,6 +422,13 @@ const App = () => {
         <h1 className="title">Checklist <span className="gradient-text">FA</span></h1>
         <p className="subtitle">Gestão de tarefas com alta performance</p>
       </header>
+
+      {user && (
+        <div className="user-bar">
+          <span>Olá, <strong>{user.username}</strong></span>
+          <button className="btn-logout" onClick={handleLogout}>Sair</button>
+        </div>
+      )}
 
       {view === 'home' ? (
         <div className="home-screen fade-in">
@@ -352,6 +462,42 @@ const App = () => {
                 </div>
               )
             })}
+          </div>
+        </div>
+      ) : view === 'login' ? (
+        <div className="login-screen fade-in">
+          <div className="glass-card login-card">
+            <h2>Acesso Restrito</h2>
+            <p>Faça login para criar e gerenciar checklists.</p>
+            <form onSubmit={handleLogin}>
+              <div className="form-group">
+                <label>Usuário</label>
+                <input 
+                  type="text" 
+                  className="task-input" 
+                  value={loginForm.username}
+                  onChange={(e) => setLoginForm({ ...loginForm, username: e.target.value })}
+                  placeholder="Seu usuário"
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label>Senha</label>
+                <input 
+                  type="password" 
+                  className="task-input" 
+                  value={loginForm.password}
+                  onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
+                  placeholder="Sua senha"
+                  required
+                />
+              </div>
+              {loginError && <p className="error-message">{loginError}</p>}
+              <div className="actions">
+                <button type="button" className="btn-secondary" onClick={() => setView('home')}>Voltar</button>
+                <button type="submit" className="btn-primary">Entrar</button>
+              </div>
+            </form>
           </div>
         </div>
       ) : (
@@ -449,8 +595,37 @@ const App = () => {
                   <div className="checklist-header">
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                       <div>
-                        <h2>Checklist: {clientData.name}</h2>
-                        <span className="client-tag">Visualização de Alta Performance</span>
+                        <div className="client-header-edit">
+                          {isEditingName ? (
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                              <input 
+                                type="text"
+                                className="task-input-inline"
+                                value={clientData.name}
+                                onChange={(e) => setClientData({ ...clientData, name: e.target.value })}
+                                onBlur={() => setIsEditingName(false)}
+                                autoFocus
+                              />
+                            </div>
+                          ) : (
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                              <h2 onClick={() => !isSharedView && setIsEditingName(true)} style={{ cursor: isSharedView ? 'default' : 'pointer' }}>
+                                Checklist: {clientData.name}
+                              </h2>
+                              {!isSharedView && (
+                                <svg onClick={() => setIsEditingName(true)} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ cursor: 'pointer', opacity: 0.6 }}>
+                                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                                </svg>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                          <span className="client-tag">Visualização de Alta Performance</span>
+                          {!user && <span className="read-only-tag">Modo Somente Leitura</span>}
+                          {isSyncing && <span className="sync-indicator">Sincronizando...</span>}
+                        </div>
                       </div>
                       <div style={{ display: 'flex', gap: '0.5rem' }}>
                         <button className="btn-share" onClick={generateShareLink} disabled={sharingLoading}>
@@ -461,6 +636,27 @@ const App = () => {
                           </svg>
                           {sharingLoading ? 'Encurtando...' : 'Link Público'}
                         </button>
+                        {shortId && (
+                          <button
+                            className="btn-save"
+                            onClick={saveToRedis}
+                            disabled={saveStatus === 'saving'}
+                          >
+                            {saveStatus === 'saving' && 'Salvando...'}
+                            {saveStatus === 'saved' && '✓ Salvo!'}
+                            {saveStatus === 'error' && '⚠ Erro'}
+                            {saveStatus === 'idle' && (
+                              <>
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: '6px' }}>
+                                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                                  <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                                  <polyline points="7 3 7 8 15 8"></polyline>
+                                </svg>
+                                Salvar
+                              </>
+                            )}
+                          </button>
+                        )}
                         <button className="btn-secondary" onClick={() => {
                           if (isSharedView) {
                             window.location.href = window.location.origin + window.location.pathname
