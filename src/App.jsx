@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import './App.css'
+import LZString from 'lz-string'
 
 const App = () => {
   const [view, setView] = useState('home') // 'home', 'wizard'
@@ -21,15 +22,21 @@ const App = () => {
     
     if (shareData) {
       try {
-        const decoded = JSON.parse(decodeURIComponent(escape(atob(shareData))))
+        // Try LZ-String compressed format first (new), fall back to plain base64 (legacy)
+        let decoded
+        const decompressed = LZString.decompressFromEncodedURIComponent(shareData)
+        if (decompressed) {
+          decoded = JSON.parse(decompressed)
+        } else {
+          decoded = JSON.parse(decodeURIComponent(escape(atob(shareData))))
+        }
         
-        // Handle shortened format (n=name, g=groups) or legacy format
         const name = decoded.n || decoded.name
         const groups = (decoded.g || decoded.groups || []).map(group => ({
-          id: group.id || Date.now() + Math.random(),
+          id: Date.now() + Math.random(),
           theme: group.t || group.theme,
           items: (group.i || group.items || []).map(item => ({
-            id: item.id || Date.now() + Math.random(),
+            id: Date.now() + Math.random(),
             text: item.x || item.text,
             responsible: item.r || item.responsible,
             completed: item.c !== undefined ? !!item.c : (!!item.completed)
@@ -183,7 +190,7 @@ const App = () => {
   }
 
   const generateShareLink = () => {
-    // Shortened data structure to keep URL length minimal
+    // Compact keys + LZ-String URL-safe compression = minimal URL
     const compactData = {
       n: clientData.name,
       g: taskGroups.map(g => ({
@@ -195,12 +202,11 @@ const App = () => {
         }))
       }))
     }
-    const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(compactData))))
-    const url = `${window.location.origin}${window.location.pathname}?share=${encoded}`
+    const compressed = LZString.compressToEncodedURIComponent(JSON.stringify(compactData))
+    const url = `${window.location.origin}${window.location.pathname}?share=${compressed}`
     
-    // Copy to clipboard
     navigator.clipboard.writeText(url).then(() => {
-      alert('Link público otimizado e copiado!')
+      alert('Link público copiado!')
     }).catch(err => {
       console.error('Erro ao copiar link: ', err)
       alert('Não foi possível copiar o link. Tente manualmente: ' + url)
