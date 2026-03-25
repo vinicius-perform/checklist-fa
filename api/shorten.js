@@ -16,13 +16,13 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end()
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' })
 
-  const { payload } = req.body
+  const { payload, id: existingId } = req.body
   if (!payload) return res.status(400).json({ error: 'Missing payload' })
 
   try {
     const redis = Redis.fromEnv()
-    const id = nanoid(7)
-    // Store with 180-day TTL
+    // If an id is provided, update existing key (auto-save). Otherwise generate a new one.
+    const id = existingId || nanoid(7)
     await redis.set(`ck:${id}`, payload, { ex: 60 * 60 * 24 * 180 })
     return res.json({ id })
   } catch (err) {

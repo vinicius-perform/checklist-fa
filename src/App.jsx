@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import './App.css'
 import LZString from 'lz-string'
 
@@ -9,6 +9,8 @@ const App = () => {
   const [activeProjectId, setActiveProjectId] = useState(null)
   const [isSharedView, setIsSharedView] = useState(false)
   const [sharingLoading, setSharingLoading] = useState(false)
+  const [shortId, setShortId] = useState(null)   // ID do link curto ativo
+  const autoSaveTimerRef = useRef(null)           // timer do debounce
   
   // Current project being edited/created
   const [clientData, setClientData] = useState({ name: '' })
@@ -136,12 +138,42 @@ const App = () => {
     })
   }
 
-  // Auto-save on specific actions
+  // Auto-save to localStorage on specific actions
   useEffect(() => {
     if (view === 'wizard' && activeProjectId) {
       saveCurrentProject()
     }
   }, [taskGroups, clientData, step])
+
+  // Auto-save to Redis (debounced 1.5s) when a shortId exists and tasks change
+  useEffect(() => {
+    if (!shortId || isSharedView || taskGroups.length === 0) return
+
+    clearTimeout(autoSaveTimerRef.current)
+    autoSaveTimerRef.current = setTimeout(async () => {
+      try {
+        const compactData = {
+          n: clientData.name,
+          g: taskGroups.map(g => ({
+            t: g.theme,
+            i: g.items.map(t => ({
+              x: t.text,
+              r: t.responsible,
+              c: t.completed ? 1 : 0
+            }))
+          }))
+        }
+        const payload = LZString.compressToEncodedURIComponent(JSON.stringify(compactData))
+        await fetch('/api/shorten', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ payload, id: shortId })
+        })
+      } catch (_) { /* silent fail — link ainda funciona com estado anterior */ }
+    }, 1500)
+
+    return () => clearTimeout(autoSaveTimerRef.current)
+  }, [taskGroups, shortId])
 
   const nextStep = () => setStep(prev => Math.min(prev + 1, 4))
   const prevStep = () => setStep(prev => Math.max(prev - 1, 1))
@@ -242,6 +274,9 @@ const App = () => {
         if (res.ok) {
           const { id } = await res.json()
           shortUrl = `${window.location.origin}${window.location.pathname}?s=${id}`
+          // Persiste o ID para auto-save futuro e atualiza a URL do browser
+          setShortId(id)
+          window.history.replaceState(null, '', `?s=${id}`)
         }
       } catch (_) { /* API indisponível, usar fallback inline */ }
 
@@ -250,7 +285,7 @@ const App = () => {
 
       await navigator.clipboard.writeText(finalUrl)
       if (shortUrl) {
-        alert(`🔗 Link curto copiado:\n${finalUrl}`)
+        alert(`🔗 Link curto copiado:\n${finalUrl}\n\nA partir de agora, o link é atualizado automaticamente a cada check.`)
       } else {
         alert(`📋 Link copiado (versão completa):\n${finalUrl}`)
       }
