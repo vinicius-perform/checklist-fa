@@ -2,26 +2,40 @@ import React, { useState, useEffect, useRef } from 'react'
 import './App.css'
 import LZString from 'lz-string'
 
-const App = () => {
-  const [view, setView] = useState('home') // 'home', 'wizard'
+// Components
+import Header from './components/Header'
+import UserBar from './components/UserBar'
+import Stepper from './components/Stepper'
+import ProjectCard from './components/ProjectCard'
+import Login from './components/Login'
+import StepClient from './components/StepClient'
+import StepNotepad from './components/StepNotepad'
+import StepResponsible from './components/StepResponsible'
+import StepFinal from './components/StepFinal'
+
+function App() {
+  const [view, setView] = useState('home') // 'home', 'login', 'wizard'
   const [step, setStep] = useState(1)
   const [projects, setProjects] = useState([])
   const [activeProjectId, setActiveProjectId] = useState(null)
   const [isSharedView, setIsSharedView] = useState(false)
-  const [isSyncing, setIsSyncing] = useState(false) // status do debounce de auto-save
+  const [isSyncing, setIsSyncing] = useState(false)
   const [isEditingName, setIsEditingName] = useState(false)
-  const [user, setUser] = useState(null)         // usuário logado
+  const [user, setUser] = useState(null)
   const [loginForm, setLoginForm] = useState({ username: '', password: '' })
   const [loginError, setLoginError] = useState('')
-  const autoSaveTimerRef = useRef(null)           // timer do debounce
+  const [shortId, setShortId] = useState(null)
+  const [sharingLoading, setSharingLoading] = useState(false)
+  const [saveStatus, setSaveStatus] = useState('idle')
   
-  // Current project being edited/created
   const [clientData, setClientData] = useState({ name: '' })
   const [notepadContent, setNotepadContent] = useState('')
   const [taskGroups, setTaskGroups] = useState([])
 
-  // Helper: decode compressed payload and hydrate state
-  const applySharedPayload = (payload) => {
+  const autoSaveTimerRef = useRef(null)
+
+  // Use function declarations for all major logic to avoid TDZ issues
+  function applySharedPayload(payload) {
     try {
       let decoded
       const decompressed = LZString.decompressFromEncodedURIComponent(payload)
@@ -53,27 +67,24 @@ const App = () => {
     }
   }
 
-  // Load projects from localStorage
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
-    const shortId = params.get('s')      // new: self-hosted short link
-    const shareData = params.get('share') // legacy: inline compressed
+    const sId = params.get('s')
+    const shareData = params.get('share')
 
-    if (shortId) {
-      // Fetch payload from our own API
+    if (sId) {
       ;(async () => {
         try {
-          const res = await fetch(`/api/load/${shortId}`)
+          const res = await fetch(`/api/load/${sId}`)
           if (res.ok) {
             const { payload } = await res.json()
             applySharedPayload(payload)
-            setShortId(shortId) // persiste o ID para poder salvar depois
+            setShortId(sId)
           } else {
             alert('Link expirado ou inválido.')
           }
         } catch (e) {
           console.error('Erro ao carregar link curto', e)
-          alert('Erro ao carregar o checklist. Tente novamente.')
         }
       })()
       return
@@ -85,123 +96,18 @@ const App = () => {
     }
 
     const savedProjects = localStorage.getItem('checklist-fa-projects')
-    if (savedProjects) {
-      setProjects(JSON.parse(savedProjects))
-    }
+    if (savedProjects) setProjects(JSON.parse(savedProjects))
 
-    // Auth check
     const savedUser = localStorage.getItem('checklist-fa-user')
-    if (savedUser) {
-      setUser(JSON.parse(savedUser))
-    }
+    if (savedUser) setUser(JSON.parse(savedUser))
   }, [])
 
-  const handleLogin = async (e) => {
-    e.preventDefault()
-    setLoginError('')
-    try {
-      const res = await fetch('/api/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(loginForm)
-      })
-      if (res.ok) {
-        const data = await res.json()
-        setUser(data.user)
-        localStorage.setItem('checklist-fa-user', JSON.stringify(data.user))
-        localStorage.setItem('checklist-fa-token', data.token)
-        setView('home')
-      } else {
-        setLoginError('Credenciais inválidas.')
-      }
-    } catch (e) {
-      setLoginError('Erro ao conectar com o servidor.')
-    }
-  }
-
-  const handleLogout = () => {
-    setUser(null)
-    localStorage.removeItem('checklist-fa-user')
-    localStorage.removeItem('checklist-fa-token')
-    setView('home')
-  }
-
-  // Save projects to localStorage whenever they change
   useEffect(() => {
     if (projects.length > 0) {
       localStorage.setItem('checklist-fa-projects', JSON.stringify(projects))
     }
   }, [projects])
 
-  const startNewProject = () => {
-    if (!user) {
-      setView('login')
-      return
-    }
-    setActiveProjectId(Date.now())
-    setClientData({ name: '' })
-    setNotepadContent('')
-    setTaskGroups([])
-    setStep(1)
-    setView('wizard')
-  }
-
-  const loadProject = (project) => {
-    setActiveProjectId(project.id)
-    setClientData({ name: project.name })
-    setNotepadContent(project.notepad || '')
-    setTaskGroups(project.groups || [])
-    setStep(4) // Directly to checklist
-    setView('wizard')
-  }
-
-  const deleteProject = (e, id) => {
-    e.stopPropagation()
-    if (confirm('Excluir este projeto permanentemente?')) {
-      setProjects(projects.filter(p => p.id !== id))
-    }
-  }
-
-  // Prevent accidental exit while saving
-  useEffect(() => {
-    const handleBeforeUnload = (e) => {
-      if (isSyncing || saveStatus === 'saving') {
-        e.preventDefault()
-        e.returnValue = ''
-      }
-    }
-    window.addEventListener('beforeunload', handleBeforeUnload)
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
-  }, [isSyncing, saveStatus])
-
-  const saveCurrentProject = () => {
-    if (isSharedView) return // Don't save shared projects to local list
-
-    const updatedProject = {
-      id: activeProjectId,
-      name: clientData.name,
-      notepad: notepadContent,
-      groups: taskGroups,
-      lastUpdate: new Date().toISOString()
-    }
-
-    setProjects(prev => {
-      const exists = prev.find(p => p.id === activeProjectId)
-      if (exists) {
-        return prev.map(p => p.id === activeProjectId ? updatedProject : p)
-      }
-      return [updatedProject, ...prev]
-    })
-  }
-
-  // Auto-save to localStorage on specific actions
-  useEffect(() => {
-    if (view === 'wizard' && activeProjectId) {
-      saveCurrentProject()
-    }
-  }, [taskGroups, clientData, step])
-
-  // Auto-save to Redis (debounced 1.5s) when a shortId exists and tasks change
   useEffect(() => {
     if (!shortId || isSharedView || taskGroups.length === 0) return
 
@@ -226,17 +132,95 @@ const App = () => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ payload, id: shortId })
         })
-      } catch (_) { /* silent fail — link ainda funciona com estado anterior */ }
+      } catch (_) {}
       setIsSyncing(false)
     }, 1500)
 
     return () => clearTimeout(autoSaveTimerRef.current)
   }, [taskGroups, clientData.name, shortId])
 
-  const nextStep = () => setStep(prev => Math.min(prev + 1, 4))
-  const prevStep = () => setStep(prev => Math.max(prev - 1, 1))
+  async function handleLogin(e) {
+    if (e) e.preventDefault()
+    setLoginError('')
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(loginForm)
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setUser(data.user)
+        localStorage.setItem('checklist-fa-user', JSON.stringify(data.user))
+        localStorage.setItem('checklist-fa-token', data.token)
+        setView('home')
+      } else {
+        setLoginError('Credenciais inválidas.')
+      }
+    } catch (e) {
+      setLoginError('Erro ao conectar com o servidor.')
+    }
+  }
 
-  const handleGenerateCheckpoints = () => {
+  function handleLogout() {
+    setUser(null)
+    localStorage.removeItem('checklist-fa-user')
+    localStorage.removeItem('checklist-fa-token')
+    setView('home')
+  }
+
+  function startNewProject() {
+    if (!user) {
+      setView('login')
+      return
+    }
+    setActiveProjectId(Date.now())
+    setClientData({ name: '' })
+    setNotepadContent('')
+    setTaskGroups([])
+    setStep(1)
+    setView('wizard')
+  }
+
+  function loadProject(project) {
+    setActiveProjectId(project.id)
+    setClientData({ name: project.name })
+    setNotepadContent(project.notepad || '')
+    setTaskGroups(project.groups || [])
+    setStep(4)
+    setView('wizard')
+  }
+
+  function deleteProject(e, id) {
+    e.stopPropagation()
+    if (confirm('Excluir este projeto permanentemente?')) {
+      setProjects(projects.filter(p => p.id !== id))
+    }
+  }
+
+  function saveCurrentProject() {
+    if (isSharedView) return
+
+    const updatedProject = {
+      id: activeProjectId,
+      name: clientData.name,
+      notepad: notepadContent,
+      groups: taskGroups,
+      lastUpdate: new Date().toISOString()
+    }
+
+    setProjects(prev => {
+      const exists = prev.find(p => p.id === activeProjectId)
+      if (exists) return prev.map(p => p.id === activeProjectId ? updatedProject : p)
+      return [updatedProject, ...prev]
+    })
+  }
+
+  useEffect(() => {
+    if (view === 'wizard' && activeProjectId) saveCurrentProject()
+  }, [taskGroups, clientData, step])
+
+  function handleGenerateCheckpoints() {
     const lines = notepadContent.split('\n').filter(line => line.trim() !== '')
     const groups = []
     let currentGroup = null
@@ -265,27 +249,15 @@ const App = () => {
     })
 
     setTaskGroups(groups.filter(g => g.items.length > 0))
-    nextStep()
+    setStep(3)
   }
 
-  const updateResponsible = (groupId, taskId, responsible) => {
-    setTaskGroups(taskGroups.map(group => {
-      if (group.id === groupId) {
-        return {
-          ...group,
-          items: group.items.map(task => task.id === taskId ? { ...task, responsible } : task)
-        }
-      }
-      return group
-    }))
-  }
-
-  const toggleTask = (groupId, taskId) => {
-    if (!user) {
+  function toggleTask(groupId, taskId) {
+    if (!user && !isSharedView) {
       alert('Acesso Restrito: Apenas usuários logados podem marcar tarefas.')
       return
     }
-    setTaskGroups(taskGroups.map(group => {
+    setTaskGroups(current => current.map(group => {
       if (group.id === groupId) {
         return {
           ...group,
@@ -296,7 +268,7 @@ const App = () => {
     }))
   }
 
-  const calculateProgress = (groups) => {
+  function calculateProgress(groups) {
     if (!groups || groups.length === 0) return 0
     let total = 0
     let completed = 0
@@ -307,7 +279,7 @@ const App = () => {
     return total === 0 ? 0 : Math.round((completed / total) * 100)
   }
 
-  const generateShareLink = async () => {
+  async function generateShareLink() {
     setSharingLoading(true)
     try {
       const compactData = {
@@ -322,42 +294,32 @@ const App = () => {
         }))
       }
       const payload = LZString.compressToEncodedURIComponent(JSON.stringify(compactData))
-
       let shortUrl = null
+      
       try {
         const res = await fetch('/api/shorten', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ payload }),
-          signal: AbortSignal.timeout(8000)
+          body: JSON.stringify({ payload })
         })
         if (res.ok) {
           const { id } = await res.json()
           shortUrl = `${window.location.origin}${window.location.pathname}?s=${id}`
           setShortId(id)
-          window.history.replaceState(null, '', `?s=${id}`)
         }
-      } catch (_) { /* fallback inline */ }
+      } catch (_) {}
 
       const finalUrl = shortUrl || `${window.location.origin}${window.location.pathname}?share=${payload}`
       await navigator.clipboard.writeText(finalUrl)
-      if (shortUrl) {
-        alert(`🔗 Link curto copiado:\n${finalUrl}\n\nClique em Salvar após dar checks para atualizar o link.`)
-      } else {
-        alert(`📋 Link copiado (versão completa):\n${finalUrl}`)
-      }
+      alert(shortUrl ? '🔗 Link curto copiado!' : '📋 Link copiado (versão completa)!')
     } catch (err) {
-      console.error('Erro ao gerar link:', err)
-      alert('Erro ao gerar o link. Tente novamente.')
+      alert('Erro ao gerar link.')
     } finally {
       setSharingLoading(false)
     }
   }
 
-  // Salvar checks no Redis sem mudar o link
-  const [saveStatus, setSaveStatus] = useState('idle') // 'idle' | 'saving' | 'saved' | 'error'
-
-  const saveToRedis = async () => {
+  async function saveToRedis() {
     if (!shortId) return
     setSaveStatus('saving')
     try {
@@ -386,331 +348,113 @@ const App = () => {
     }
   }
 
-  const renderStepper = () => {
-    const isStepDisabled = (num) => {
-      if (num === 1) return false
-      if (num === 2) return !clientData.name.trim()
-      if (num === 3) return !notepadContent.trim()
-      if (num === 4) return taskGroups.length === 0
-      return true
-    }
-
-    return (
-      <div className="stepper">
-        {[1, 2, 3, 4].map(num => (
-          <div 
-            key={num} 
-            className={`step-item ${step === num ? 'active' : ''} ${step > num ? 'completed' : ''} ${isStepDisabled(num) ? 'disabled' : 'clickable'}`}
-            onClick={() => !isStepDisabled(num) && setStep(num)}
-          >
-            <div className="step-dot">{step > num ? '✓' : num}</div>
-            <span className="step-label">
-              {num === 1 && 'Cliente'}
-              {num === 2 && 'Atividades'}
-              {num === 3 && 'Responsáveis'}
-              {num === 4 && 'Checklist'}
-            </span>
-          </div>
-        ))}
-      </div>
-    )
-  }
-
   return (
     <div className="container fade-in">
-      <header className="header" onClick={() => setView('home')} style={{ cursor: 'pointer' }}>
-        <h1 className="title">Checklist <span className="gradient-text">FA</span></h1>
-        <p className="subtitle">Gestão de tarefas com alta performance</p>
-      </header>
+      <Header onClick={() => setView('home')} />
+      <UserBar user={user} onLogout={handleLogout} />
 
-      {user && (
-        <div className="user-bar">
-          <span>Olá, <strong>{user.username}</strong></span>
-          <button className="btn-logout" onClick={handleLogout}>Sair</button>
-        </div>
-      )}
-
-      {view === 'home' ? (
+      {view === 'home' && (
         <div className="home-screen fade-in">
           <div className="dashboard-header">
             <h2>Projetos em Andamento</h2>
             <button className="btn-primary" onClick={startNewProject}>+ Novo Projeto</button>
           </div>
-
           <div className="project-grid">
             <div className="project-card new-project-card" onClick={startNewProject}>
               <div className="new-icon">+</div>
               <span>Iniciar Novo Checklist</span>
             </div>
+            {projects.map(project => (
+              <ProjectCard 
+                key={project.id} 
+                project={project} 
+                onClick={loadProject} 
+                onDelete={deleteProject} 
+                calculateProgress={calculateProgress}
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
-            {projects.map(project => {
-              const progress = calculateProgress(project.groups)
-              return (
-                <div key={project.id} className="project-card glass" onClick={() => loadProject(project)}>
-                  <button className="delete-project" onClick={(e) => deleteProject(e, project.id)}>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <polyline points="3 6 5 6 21 6"></polyline>
-                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                    </svg>
-                  </button>
-                  <span className="card-title">{project.name}</span>
-                  <span className="card-date">Atualizado em {new Date(project.lastUpdate).toLocaleDateString()}</span>
-                  <div className="progress-container">
-                    <div className="progress-bar" style={{ width: `${progress}%` }}></div>
-                  </div>
-                  <span className="progress-text">{progress}% Concluído</span>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      ) : view === 'login' ? (
-        <div className="login-screen fade-in">
-          <div className="glass-card login-card">
-            <h2>Acesso Restrito</h2>
-            <p>Faça login para criar e gerenciar checklists.</p>
-            <form onSubmit={handleLogin}>
-              <div className="form-group">
-                <label>Usuário</label>
-                <input 
-                  type="text" 
-                  className="task-input" 
-                  value={loginForm.username}
-                  onChange={(e) => setLoginForm({ ...loginForm, username: e.target.value })}
-                  placeholder="Seu usuário"
-                  required
-                />
-              </div>
-              <div className="form-group">
-                <label>Senha</label>
-                <input 
-                  type="password" 
-                  className="task-input" 
-                  value={loginForm.password}
-                  onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
-                  placeholder="Sua senha"
-                  required
-                />
-              </div>
-              {loginError && <p className="error-message">{loginError}</p>}
-              <div className="actions">
-                <button type="button" className="btn-secondary" onClick={() => setView('home')}>Voltar</button>
-                <button type="submit" className="btn-primary">Entrar</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      ) : (
+      {view === 'login' && (
+        <Login 
+          loginForm={loginForm} 
+          setLoginForm={setLoginForm} 
+          onSubmit={handleLogin} 
+          onBack={() => setView('home')} 
+          error={loginError} 
+        />
+      )}
+
+      {view === 'wizard' && (
         <>
-          {renderStepper()}
+          {step === 4 && (
+            <div className="global-progress-fixed">
+              <div className="global-progress-fill" style={{ width: `${calculateProgress(taskGroups)}%` }}></div>
+            </div>
+          )}
+          <Stepper 
+            currentStep={step} 
+            setStep={setStep} 
+            clientName={clientData.name} 
+            notepadContent={notepadContent} 
+            taskGroups={taskGroups} 
+          />
           <main className="main-content">
-            <div className="glass-card glass">
-              
-              {/* STEP 1: CLIENT REGISTRATION */}
+            <div className="glass-card">
               {step === 1 && (
-                <div className="form-card fade-in">
-                  <div className="form-group">
-                    <label>Nome do Cliente</label>
-                    <input 
-                      type="text" 
-                      className="task-input" 
-                      placeholder="Ex: Empresa ABC" 
-                      value={clientData.name}
-                      onChange={(e) => setClientData({ ...clientData, name: e.target.value })}
-                    />
-                  </div>
-                  <div className="actions">
-                    <button className="btn-secondary" onClick={() => setView('home')}>Voltar ao Início</button>
-                    <button 
-                      className="btn-primary" 
-                      onClick={nextStep}
-                      disabled={!clientData.name.trim()}
-                    >
-                      Próximo
-                    </button>
-                  </div>
-                </div>
+                <StepClient 
+                  clientData={clientData} 
+                  setClientData={setClientData} 
+                  onNext={() => setStep(2)} 
+                  onCancel={() => setView('home')} 
+                />
               )}
-
-              {/* STEP 2: NOTEPAD ACTIVITIES */}
               {step === 2 && (
-                <div className="form-card fade-in">
-                  <div className="form-group">
-                    <label>Bloco de Notas (Temas e Subtópicos com '-')</label>
-                    <textarea 
-                      className="notepad-textarea" 
-                      placeholder="Onboarding&#10;- Reunião inicial&#10;- Configuração..." 
-                      value={notepadContent}
-                      onChange={(e) => setNotepadContent(e.target.value)}
-                    />
-                  </div>
-                  <div className="actions">
-                    <button className="btn-secondary" onClick={prevStep}>Voltar</button>
-                    <button 
-                      className="btn-primary" 
-                      onClick={handleGenerateCheckpoints}
-                      disabled={!notepadContent.trim()}
-                    >
-                      Continuar
-                    </button>
-                  </div>
-                </div>
+                <StepNotepad 
+                  notepadContent={notepadContent} 
+                  setNotepadContent={setNotepadContent} 
+                  onNext={handleGenerateCheckpoints} 
+                  onPrev={() => setStep(1)} 
+                />
               )}
-
-              {/* STEP 3: ASSIGN RESPONSIBLE */}
               {step === 3 && (
-                <div className="form-card fade-in">
-                  <div className="form-group">
-                    <label>Definir Responsáveis</label>
-                    <div className="assign-list">
-                      {taskGroups.map(group => (
-                        <div key={group.id} className="assign-group">
-                          <span className="assign-theme-title">{group.theme}</span>
-                          {group.items.map(task => (
-                            <div key={task.id} className="assign-item">
-                              <span className="assign-task-text">{task.text}</span>
-                              <input 
-                                type="text" 
-                                placeholder="Responsável" 
-                                className="responsible-input"
-                                value={task.responsible}
-                                onChange={(e) => updateResponsible(group.id, task.id, e.target.value)}
-                              />
-                            </div>
-                          ))}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="actions">
-                    <button className="btn-secondary" onClick={prevStep}>Voltar</button>
-                    <button className="btn-primary" onClick={nextStep}>Gerar Checklist</button>
-                  </div>
-                </div>
+                <StepResponsible 
+                  taskGroups={taskGroups} 
+                  updateResponsible={(gid, tid, resp) => {
+                    setTaskGroups(taskGroups.map(g => g.id === gid ? {
+                      ...g,
+                      items: g.items.map(t => t.id === tid ? { ...t, responsible: resp } : t)
+                    } : g))
+                  }} 
+                  onNext={() => setStep(4)} 
+                  onPrev={() => setStep(2)} 
+                />
               )}
-
-              {/* STEP 4: FINAL CHECKLIST */}
               {step === 4 && (
-                <div className="fade-in">
-                  <div className="checklist-header">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                      <div>
-                        <div className="client-header-edit">
-                          {isEditingName ? (
-                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                              <input 
-                                type="text"
-                                className="task-input-inline"
-                                value={clientData.name}
-                                onChange={(e) => setClientData({ ...clientData, name: e.target.value })}
-                                onBlur={() => setIsEditingName(false)}
-                                autoFocus
-                              />
-                            </div>
-                          ) : (
-                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                              <h2 onClick={() => !isSharedView && setIsEditingName(true)} style={{ cursor: isSharedView ? 'default' : 'pointer' }}>
-                                Checklist: {clientData.name}
-                              </h2>
-                              {!isSharedView && (
-                                <svg onClick={() => setIsEditingName(true)} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ cursor: 'pointer', opacity: 0.6 }}>
-                                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                                </svg>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                          <span className="client-tag">Visualização de Alta Performance</span>
-                          {!user && <span className="read-only-tag">Modo Somente Leitura</span>}
-                          {isSyncing && <span className="sync-indicator">Sincronizando...</span>}
-                        </div>
-                      </div>
-                      <div style={{ display: 'flex', gap: '0.5rem' }}>
-                        <button className="btn-share" onClick={generateShareLink} disabled={sharingLoading}>
-                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: '8px' }}>
-                            <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"></path>
-                            <polyline points="16 6 12 2 8 6"></polyline>
-                            <line x1="12" y1="2" x2="12" y2="15"></line>
-                          </svg>
-                          {sharingLoading ? 'Encurtando...' : 'Link Público'}
-                        </button>
-                        {shortId && (
-                          <button
-                            className="btn-save"
-                            onClick={saveToRedis}
-                            disabled={saveStatus === 'saving'}
-                          >
-                            {saveStatus === 'saving' && 'Salvando...'}
-                            {saveStatus === 'saved' && '✓ Salvo!'}
-                            {saveStatus === 'error' && '⚠ Erro'}
-                            {saveStatus === 'idle' && (
-                              <>
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: '6px' }}>
-                                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
-                                  <polyline points="17 21 17 13 7 13 7 21"></polyline>
-                                  <polyline points="7 3 7 8 15 8"></polyline>
-                                </svg>
-                                Salvar
-                              </>
-                            )}
-                          </button>
-                        )}
-                        <button className="btn-secondary" onClick={() => {
-                          if (isSharedView) {
-                            window.location.href = window.location.origin + window.location.pathname
-                          } else {
-                            setView('home')
-                          }
-                        }}>
-                          {isSharedView ? 'Criar Meu Checklist' : 'Salvar e Sair'}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="task-list">
-                    {taskGroups.map(group => (
-                      <div key={group.id} className="theme-group">
-                        <div className="theme-header">
-                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-                          {group.theme}
-                        </div>
-                        <div className="subtask-list">
-                          {group.items.map(task => (
-                            <div key={task.id} className={`task-item ${task.completed ? 'completed' : ''}`}>
-                              <div className="task-content" onClick={() => toggleTask(group.id, task.id)}>
-                                <div className="checkbox">
-                                  {task.completed && <div className="checked-icon" />}
-                                </div>
-                                <div style={{ display: 'flex', flexDirection: 'column' }}>
-                                  <span className="task-name">{task.text}</span>
-                                  {task.responsible && (
-                                    <span className="task-responsible">
-                                      <span className="resp-label">Responsável:</span> {task.responsible}
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="actions">
-                    {!isSharedView && <button className="btn-secondary" onClick={prevStep}>Revisar Responsáveis</button>}
-                    <button className="btn-primary" onClick={() => {
-                      if (isSharedView) {
-                        alert('Checklist visualizado com sucesso!')
-                      } else {
-                        setView('home')
-                      }
-                    }}>
-                      {isSharedView ? 'Checklist Online' : 'Finalizar Sessão'}
-                    </button>
-                  </div>
-                </div>
+                <StepFinal 
+                  clientData={clientData}
+                  taskGroups={taskGroups}
+                  user={user}
+                  isSharedView={isSharedView}
+                  isSyncing={isSyncing}
+                  isEditingName={isEditingName}
+                  setIsEditingName={setIsEditingName}
+                  setClientName={(name) => setClientData({ ...clientData, name })}
+                  toggleTask={toggleTask}
+                  setTaskGroups={setTaskGroups}
+                  generateShareLink={generateShareLink}
+                  sharingLoading={sharingLoading}
+                  shortId={shortId}
+                  saveToRedis={saveToRedis}
+                  saveStatus={saveStatus}
+                  onPrev={() => setStep(3)}
+                  onExit={() => {
+                    if (isSharedView) window.location.href = window.location.origin + window.location.pathname
+                    else setView('home')
+                  }}
+                />
               )}
             </div>
           </main>

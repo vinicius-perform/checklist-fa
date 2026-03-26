@@ -2,14 +2,16 @@
   --primary: #00f2fe;
   --secondary: #4facfe;
   --accent: #ff007c;
-  --bg: #0a0b10;
-  --surface: #161821;
+  --bg: #030305;
+  --surface: rgba(22, 24, 33, 0.6);
   --text: #ffffff;
-  --text-dim: #a0a0b8;
-  --border: rgba(255, 255, 255, 0.1);
-  --glass: rgba(255, 255, 255, 0.05);
+  --text-dim: #9ca3af;
+  --border: rgba(255, 255, 255, 0.08);
+  --glass: rgba(255, 255, 255, 0.03);
   --glass-border: rgba(255, 255, 255, 0.1);
-  --gradient: linear-gradient(135deg, var(--primary), var(--secondary));
+  --gradient: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+  --glow: 0 0 20px rgba(0, 242, 254, 0.3);
+  --font-main: 'Outfit', sans-serif;
 }
 
 * {
