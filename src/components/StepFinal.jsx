@@ -78,7 +78,7 @@ const StepFinal = ({
               </svg>
               {sharingLoading ? 'Encurtando...' : 'Link Público'}
             </button>
-            {shortId && (
+            {user && (
               <button
                 className="btn-save"
                 onClick={saveToRedis}

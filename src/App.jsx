@@ -32,7 +32,13 @@ function App() {
   const [notepadContent, setNotepadContent] = useState('')
   const [taskGroups, setTaskGroups] = useState([])
 
-  const autoSaveTimerRef = useRef(null)
+  const getHeaders = () => {
+    const token = localStorage.getItem('checklist-fa-token')
+    return {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    }
+  }
 
   // Use function declarations for all major logic to avoid TDZ issues
   function applySharedPayload(payload) {
@@ -67,6 +73,18 @@ function App() {
     }
   }
 
+  async function fetchProjects() {
+    try {
+      const res = await fetch('/api/projects', { headers: getHeaders() })
+      if (res.ok) {
+        const data = await res.json()
+        setProjects(data.projects || [])
+      }
+    } catch (e) {
+      console.error('Erro ao buscar projetos', e)
+    }
+  }
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const sId = params.get('s')
@@ -78,13 +96,17 @@ function App() {
           const res = await fetch(`/api/load/${sId}`)
           if (res.ok) {
             const { payload } = await res.json()
-            applySharedPayload(payload)
-            setShortId(sId)
+            setClientData({ name: payload.name })
+            setTaskGroups(payload.groups || [])
+            setIsSharedView(true)
+            setView('wizard')
+            setStep(4)
+            setActiveProjectId(sId)
           } else {
-            alert('Link expirado ou inválido.')
+            alert('Checklist não encontrado.')
           }
         } catch (e) {
-          console.error('Erro ao carregar link curto', e)
+          console.error('Erro ao carregar checklist', e)
         }
       })()
       return
@@ -95,49 +117,46 @@ function App() {
       return
     }
 
-    const savedProjects = localStorage.getItem('checklist-fa-projects')
-    if (savedProjects) setProjects(JSON.parse(savedProjects))
-
     const savedUser = localStorage.getItem('checklist-fa-user')
-    if (savedUser) setUser(JSON.parse(savedUser))
+    if (savedUser) {
+      setUser(JSON.parse(savedUser))
+    }
   }, [])
 
   useEffect(() => {
-    if (projects.length > 0) {
-      localStorage.setItem('checklist-fa-projects', JSON.stringify(projects))
-    }
-  }, [projects])
-
-  useEffect(() => {
-    if (!shortId || isSharedView || taskGroups.length === 0) return
-
-    setIsSyncing(true)
-    clearTimeout(autoSaveTimerRef.current)
-    autoSaveTimerRef.current = setTimeout(async () => {
-      try {
-        const compactData = {
-          n: clientData.name,
-          g: taskGroups.map(g => ({
-            t: g.theme,
-            i: g.items.map(t => ({
-              x: t.text,
-              r: t.responsible,
-              c: t.completed ? 1 : 0
-            }))
-          }))
+    if (user) {
+      fetchProjects()
+      // Migração automática de dados locais para o Redis no primeiro acesso após login
+      const migrateLocalData = async () => {
+        const localProjectsStr = localStorage.getItem('checklist_fa_projects')
+        if (localProjectsStr) {
+          try {
+            const localProjects = JSON.parse(localProjectsStr)
+            console.log('Detectados projetos locais antigos para migração:', localProjects.length)
+            
+            for (const proj of localProjects) {
+              await fetch('/api/projects', {
+                method: 'POST',
+                headers: getHeaders(),
+                body: JSON.stringify({ project: proj })
+              })
+            }
+            
+            // Após migrar tudo, busca novamente para atualizar a lista do estado
+            fetchProjects()
+            localStorage.removeItem('checklist_fa_projects') // Limpa o legado
+            console.log('Migração concluída com sucesso.')
+          } catch (e) {
+            console.error('Erro na migração de dados locais:', e)
+          }
         }
-        const payload = LZString.compressToEncodedURIComponent(JSON.stringify(compactData))
-        await fetch('/api/shorten', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ payload, id: shortId })
-        })
-      } catch (_) {}
-      setIsSyncing(false)
-    }, 1500)
+      }
+      migrateLocalData()
+    }
+  }, [user])
 
-    return () => clearTimeout(autoSaveTimerRef.current)
-  }, [taskGroups, clientData.name, shortId])
+  // Automatic background saving removed in favor of explicit save for Admin
+  // and public check syncing.
 
   async function handleLogin(e) {
     if (e) e.preventDefault()
@@ -182,7 +201,7 @@ function App() {
     setView('wizard')
   }
 
-  function loadProject(project) {
+  async function loadProject(project) {
     setActiveProjectId(project.id)
     setClientData({ name: project.name })
     setNotepadContent(project.notepad || '')
@@ -191,16 +210,27 @@ function App() {
     setView('wizard')
   }
 
-  function deleteProject(e, id) {
+  async function deleteProject(e, id) {
     e.stopPropagation()
     if (confirm('Excluir este projeto permanentemente?')) {
-      setProjects(projects.filter(p => p.id !== id))
+      try {
+        const res = await fetch(`/api/projects?id=${id}`, {
+          method: 'DELETE',
+          headers: getHeaders()
+        })
+        if (res.ok) {
+          setProjects(projects.filter(p => p.id !== id))
+        }
+      } catch (e) {
+        alert('Erro ao excluir projeto.')
+      }
     }
   }
 
-  function saveCurrentProject() {
-    if (isSharedView) return
+  async function saveCurrentProject() {
+    if (isSharedView || !user) return
 
+    setSaveStatus('saving')
     const updatedProject = {
       id: activeProjectId,
       name: clientData.name,
@@ -209,16 +239,38 @@ function App() {
       lastUpdate: new Date().toISOString()
     }
 
-    setProjects(prev => {
-      const exists = prev.find(p => p.id === activeProjectId)
-      if (exists) return prev.map(p => p.id === activeProjectId ? updatedProject : p)
-      return [updatedProject, ...prev]
-    })
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({ project: updatedProject })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        const savedProject = data.project
+        setActiveProjectId(savedProject.id)
+        setProjects(prev => {
+          const exists = prev.find(p => p.id === savedProject.id)
+          if (exists) return prev.map(p => p.id === savedProject.id ? savedProject : p)
+          return [savedProject, ...prev]
+        })
+        setSaveStatus('saved')
+      } else {
+        setSaveStatus('error')
+      }
+    } catch (e) {
+      setSaveStatus('error')
+    } finally {
+      setTimeout(() => setSaveStatus('idle'), 2000)
+    }
   }
 
+  // Save projects only when they are essentially valid
   useEffect(() => {
-    if (view === 'wizard' && activeProjectId) saveCurrentProject()
-  }, [taskGroups, clientData, step])
+    if (view === 'wizard' && user && taskGroups.length > 0 && step === 4) {
+      saveCurrentProject()
+    }
+  }, [taskGroups, clientData.name])
 
   function handleGenerateCheckpoints() {
     const lines = notepadContent.split('\n').filter(line => line.trim() !== '')
@@ -252,20 +304,43 @@ function App() {
     setStep(3)
   }
 
-  function toggleTask(groupId, taskId) {
-    if (!user && !isSharedView) {
-      alert('Acesso Restrito: Apenas usuários logados podem marcar tarefas.')
-      return
-    }
+  async function toggleTask(groupId, taskId) {
+    // Current state toggle (Optimistic)
+    let isCompleted = false
     setTaskGroups(current => current.map(group => {
       if (group.id === groupId) {
         return {
           ...group,
-          items: group.items.map(task => task.id === taskId ? { ...task, completed: !task.completed } : task)
+          items: group.items.map(task => {
+            if (task.id === taskId) {
+              isCompleted = !task.completed
+              return { ...task, completed: isCompleted }
+            }
+            return task
+          })
         }
       }
       return group
     }))
+
+    // Sync to Redis
+    try {
+      setIsSyncing(true)
+      await fetch('/api/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          projectId: activeProjectId, 
+          groupId, 
+          taskId, 
+          completed: isCompleted 
+        })
+      })
+    } catch (e) {
+      console.error('Erro ao sincronizar tarefa', e)
+    } finally {
+      setIsSyncing(false)
+    }
   }
 
   function calculateProgress(groups) {
@@ -280,72 +355,18 @@ function App() {
   }
 
   async function generateShareLink() {
-    setSharingLoading(true)
+    if (!activeProjectId) return
+    const finalUrl = `${window.location.origin}${window.location.pathname}?s=${activeProjectId}`
     try {
-      const compactData = {
-        n: clientData.name,
-        g: taskGroups.map(g => ({
-          t: g.theme,
-          i: g.items.map(t => ({
-            x: t.text,
-            r: t.responsible,
-            c: t.completed ? 1 : 0
-          }))
-        }))
-      }
-      const payload = LZString.compressToEncodedURIComponent(JSON.stringify(compactData))
-      let shortUrl = null
-      
-      try {
-        const res = await fetch('/api/shorten', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ payload })
-        })
-        if (res.ok) {
-          const { id } = await res.json()
-          shortUrl = `${window.location.origin}${window.location.pathname}?s=${id}`
-          setShortId(id)
-        }
-      } catch (_) {}
-
-      const finalUrl = shortUrl || `${window.location.origin}${window.location.pathname}?share=${payload}`
       await navigator.clipboard.writeText(finalUrl)
-      alert(shortUrl ? '🔗 Link curto copiado!' : '📋 Link copiado (versão completa)!')
+      alert('🔗 Link de compartilhamento copiado!')
     } catch (err) {
-      alert('Erro ao gerar link.')
-    } finally {
-      setSharingLoading(false)
+      alert('Erro ao copiar link.')
     }
   }
 
   async function saveToRedis() {
-    if (!shortId) return
-    setSaveStatus('saving')
-    try {
-      const compactData = {
-        n: clientData.name,
-        g: taskGroups.map(g => ({
-          t: g.theme,
-          i: g.items.map(t => ({
-            x: t.text,
-            r: t.responsible,
-            c: t.completed ? 1 : 0
-          }))
-        }))
-      }
-      const payload = LZString.compressToEncodedURIComponent(JSON.stringify(compactData))
-      const res = await fetch('/api/shorten', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payload, id: shortId })
-      })
-      setSaveStatus(res.ok ? 'saved' : 'error')
-    } catch (_) {
-      setSaveStatus('error')
-    } finally {
-      setTimeout(() => setSaveStatus('idle'), 2500)
-    }
+    saveCurrentProject()
   }
 
   return (

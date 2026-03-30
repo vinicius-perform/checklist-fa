@@ -1,4 +1,4 @@
-import { Redis } from '@upstash/redis'
+import { dbGet } from '../_utils.js'
 
 export default async function handler(req, res) {
   // CORS headers
@@ -13,12 +13,11 @@ export default async function handler(req, res) {
   if (!id) return res.status(400).json({ error: 'Missing id' })
 
   try {
-    const redis = Redis.fromEnv()
-    const payload = await redis.get(`ck:${id}`)
-    if (!payload) return res.status(404).json({ error: 'Not found or expired' })
+    const payload = await dbGet(`proj:${id}`)
+    if (!payload) return res.status(404).json({ error: 'Not found' })
     return res.json({ payload })
   } catch (err) {
-    console.error('Redis error:', err)
+    console.error('Database error:', err)
     return res.status(500).json({ error: 'Storage error' })
   }
 }
